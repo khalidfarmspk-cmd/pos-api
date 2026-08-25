@@ -94,6 +94,60 @@ function handleDbError(res, context, err) {
   return res.status(500).json({ error: 'Internal server error' });
 }
 
+function isValidUuid(value) {
+  if (typeof value !== 'string') {
+    return false;
+  }
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    .test(value.trim());
+}
+
+/** Accept ISO-8601 or MySQL datetime; return MySQL 'YYYY-MM-DD HH:MM:SS' or null. */
+function parseMysqlDateTime(value) {
+  if (typeof value !== 'string' || value.trim() === '') {
+    return null;
+  }
+  const trimmed = value.trim();
+
+  const mysqlMatch = trimmed.match(
+    /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d+)?$/
+  );
+  if (mysqlMatch) {
+    return `${mysqlMatch[1]} ${mysqlMatch[2]}`;
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return `${trimmed} 00:00:00`;
+  }
+
+  const date = new Date(trimmed);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} `
+    + `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`;
+}
+
+/** DECIMAL qty/stock as a normalised string, or null if invalid / negative. */
+function parseDecimalString(value, { allowNegative = false } = {}) {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return null;
+    if (!allowNegative && value < 0) return null;
+    return String(value);
+  }
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!/^-?\d+(\.\d+)?$/.test(trimmed)) {
+    return null;
+  }
+  if (!allowNegative && trimmed.startsWith('-')) {
+    return null;
+  }
+  return trimmed;
+}
+
 module.exports = {
   toMoney,
   toQty,
@@ -106,4 +160,7 @@ module.exports = {
   requireTrimmedString,
   parseBooleanFlag,
   handleDbError,
+  isValidUuid,
+  parseMysqlDateTime,
+  parseDecimalString,
 };

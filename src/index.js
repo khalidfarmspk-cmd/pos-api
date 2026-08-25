@@ -13,6 +13,7 @@ const brandRoutes = require('./routes/brands');
 const supplierRoutes = require('./routes/suppliers');
 const unitRoutes = require('./routes/units');
 const userRoutes = require('./routes/users');
+const syncRoutes = require('./routes/sync');
 
 if (!process.env.JWT_SECRET) {
   console.error('JWT_SECRET is required');
@@ -47,6 +48,7 @@ app.use('/api/brands', brandRoutes);
 app.use('/api/suppliers', supplierRoutes);
 app.use('/api/units', unitRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/sync', syncRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found' });
