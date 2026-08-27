@@ -458,7 +458,7 @@ router.get('/changes', authenticate, async (req, res) => {
     let userRows = [];
     try {
       const [rows] = await pool.execute(
-        `SELECT uuid, nama_user, username_user, level_user, status_user, updated_at
+        `SELECT uuid, nama_user, username_user, password_user, level_user, status_user, updated_at
          FROM users WHERE updated_at > ? ORDER BY updated_at ASC`,
         [sinceValue]
       );
@@ -512,6 +512,7 @@ router.get('/changes', authenticate, async (req, res) => {
         uuid: row.uuid,
         namaUser: row.nama_user,
         usernameUser: row.username_user,
+        passwordHash: row.password_user,
         levelUser: row.level_user,
         statusUser: row.status_user,
         updatedAt: row.updated_at,
