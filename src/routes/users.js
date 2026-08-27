@@ -141,6 +141,7 @@ router.post('/', authenticate, requireRole('PEMILIK'), async (req, res) => {
 });
 
 router.put('/:id', authenticate, requireRole('PEMILIK'), async (req, res) => {
+  console.log('PUT /api/users/:id called, id=', req.params.id, 'body=', req.body);
   const id = parsePositiveInt(req.params.id);
   if (id == null) {
     return res.status(400).json({ error: 'id must be a positive integer' });
