@@ -417,10 +417,15 @@ router.get('/changes', authenticate, async (req, res) => {
     const sinceValue = since || clock.defaultSince;
 
     const [productRows] = await pool.execute(
-      `SELECT uuid, kode_produk, nama_produk, harga_beli, harga_jual, satuan_Id, updated_at
-       FROM produk
-       WHERE updated_at > ?
-       ORDER BY updated_at ASC`,
+      `SELECT p.uuid, p.kode_produk, p.nama_produk, p.harga_beli, p.harga_jual, p.stok_produk,
+              p.merek_Id, p.updated_at,
+              k.uuid AS kategori_uuid, s.uuid AS supplier_uuid, u.uuid AS satuan_uuid
+       FROM produk p
+       LEFT JOIN kategori k ON p.kategori_Id = k.kategori_Id
+       LEFT JOIN supplier s ON p.supplier_Id = s.supplier_Id
+       LEFT JOIN satuan u ON p.satuan_Id = u.satuan_Id
+       WHERE p.updated_at > ?
+       ORDER BY p.updated_at ASC`,
       [sinceValue]
     );
 
@@ -432,6 +437,37 @@ router.get('/changes', authenticate, async (req, res) => {
       [sinceValue]
     );
 
+    const [categoryRows] = await pool.execute(
+      `SELECT uuid, nama_kategori, no_rak, updated_at
+       FROM kategori WHERE updated_at > ? ORDER BY updated_at ASC`,
+      [sinceValue]
+    );
+
+    const [supplierRows] = await pool.execute(
+      `SELECT uuid, nama_supplier, alamat_supplier, telp_supplier, updated_at
+       FROM supplier WHERE updated_at > ? ORDER BY updated_at ASC`,
+      [sinceValue]
+    );
+
+    const [customerRows] = await pool.execute(
+      `SELECT uuid, nama_pelanggan, telp_pelanggan, alamat_pelanggan, updated_at
+       FROM pelanggan WHERE updated_at > ? ORDER BY updated_at ASC`,
+      [sinceValue]
+    );
+
+    let userRows = [];
+    try {
+      const [rows] = await pool.execute(
+        `SELECT uuid, nama_user, username_user, level_user, status_user, updated_at
+         FROM users WHERE updated_at > ? ORDER BY updated_at ASC`,
+        [sinceValue]
+      );
+      userRows = rows;
+    } catch (userErr) {
+      // users.uuid / updated_at may not exist until migration_010
+      console.warn('GET /api/sync/changes users skipped:', userErr.message);
+    }
+
     return res.json({
       serverTime,
       products: productRows.map((row) => ({
@@ -440,7 +476,11 @@ router.get('/changes', authenticate, async (req, res) => {
         namaProduk: row.nama_produk,
         hargaBeli: toMoney(row.harga_beli),
         hargaJual: toMoney(row.harga_jual),
-        satuanId: row.satuan_Id,
+        stokProduk: row.stok_produk == null ? '0.000' : String(row.stok_produk),
+        merekId: row.merek_Id,
+        kategoriUuid: row.kategori_uuid,
+        supplierUuid: row.supplier_uuid,
+        satuanUuid: row.satuan_uuid,
         updatedAt: row.updated_at,
       })),
       settings: settingRows.map((row) => ({
@@ -448,9 +488,431 @@ router.get('/changes', authenticate, async (req, res) => {
         settingValue: row.setting_value == null ? null : String(row.setting_value),
         updatedAt: row.updated_at,
       })),
+      categories: categoryRows.map((row) => ({
+        uuid: row.uuid,
+        namaKategori: row.nama_kategori,
+        noRak: row.no_rak,
+        updatedAt: row.updated_at,
+      })),
+      suppliers: supplierRows.map((row) => ({
+        uuid: row.uuid,
+        namaSupplier: row.nama_supplier,
+        alamatSupplier: row.alamat_supplier,
+        telpSupplier: row.telp_supplier,
+        updatedAt: row.updated_at,
+      })),
+      customers: customerRows.map((row) => ({
+        uuid: row.uuid,
+        namaPelanggan: row.nama_pelanggan,
+        telpPelanggan: row.telp_pelanggan,
+        alamatPelanggan: row.alamat_pelanggan,
+        updatedAt: row.updated_at,
+      })),
+      users: userRows.map((row) => ({
+        uuid: row.uuid,
+        namaUser: row.nama_user,
+        usernameUser: row.username_user,
+        levelUser: row.level_user,
+        statusUser: row.status_user,
+        updatedAt: row.updated_at,
+      })),
     });
   } catch (err) {
     return handleDbError(res, 'GET /api/sync/changes', err);
+  }
+});
+
+async function resolveUuidToId(conn, table, idCol, uuid) {
+  if (!uuid) return null;
+  const [rows] = await conn.execute(
+    `SELECT ${idCol} AS id FROM ${table} WHERE uuid = ? LIMIT 1`,
+    [uuid]
+  );
+  return rows[0] ? rows[0].id : null;
+}
+
+function parseIncomingUpdatedAt(body) {
+  if (body.updatedAt == null || body.updatedAt === '') {
+    return { ok: true, value: null };
+  }
+  const parsed = parseMysqlDateTime(body.updatedAt);
+  if (parsed == null) {
+    return { ok: false };
+  }
+  return { ok: true, value: parsed };
+}
+
+router.post('/products', authenticate, async (req, res) => {
+  const body = req.body || {};
+  const uuid = typeof body.uuid === 'string' ? body.uuid.trim() : '';
+  if (!isValidUuid(uuid)) {
+    return res.status(400).json({ error: 'uuid must be a valid UUID' });
+  }
+  const kodeProduk = parsePositiveInt(body.kodeProduk);
+  if (kodeProduk == null) {
+    return res.status(400).json({ error: 'kodeProduk must be a positive integer' });
+  }
+  const namaProduk = requireTrimmedString(body.namaProduk, { maxLength: 100 });
+  if (namaProduk == null) {
+    return res.status(400).json({ error: 'namaProduk is required' });
+  }
+  const stokProduk = parseDecimalString(body.stokProduk);
+  if (stokProduk == null) {
+    return res.status(400).json({ error: 'stokProduk must be a non-negative decimal' });
+  }
+  const hargaBeli = parseNonNegativeInt(body.hargaBeli);
+  const hargaJual = parseNonNegativeInt(body.hargaJual);
+  if (hargaBeli == null || hargaJual == null) {
+    return res.status(400).json({ error: 'hargaBeli and hargaJual must be integers >= 0' });
+  }
+  const merekId = body.merekId == null || body.merekId === ''
+    ? null
+    : parsePositiveInt(body.merekId);
+  const updatedAtParsed = parseIncomingUpdatedAt(body);
+  if (!updatedAtParsed.ok) {
+    return res.status(400).json({ error: 'updatedAt must be a valid ISO timestamp' });
+  }
+  const incomingUpdatedAt = updatedAtParsed.value;
+
+  let kategoriUuid = null;
+  if (body.kategoriUuid != null && body.kategoriUuid !== '') {
+    if (typeof body.kategoriUuid !== 'string' || !isValidUuid(body.kategoriUuid.trim())) {
+      return res.status(400).json({ error: 'kategoriUuid must be a valid UUID or null' });
+    }
+    kategoriUuid = body.kategoriUuid.trim();
+  }
+  let supplierUuid = null;
+  if (body.supplierUuid != null && body.supplierUuid !== '') {
+    if (typeof body.supplierUuid !== 'string' || !isValidUuid(body.supplierUuid.trim())) {
+      return res.status(400).json({ error: 'supplierUuid must be a valid UUID or null' });
+    }
+    supplierUuid = body.supplierUuid.trim();
+  }
+  let satuanUuid = null;
+  if (body.satuanUuid != null && body.satuanUuid !== '') {
+    if (typeof body.satuanUuid !== 'string' || !isValidUuid(body.satuanUuid.trim())) {
+      return res.status(400).json({ error: 'satuanUuid must be a valid UUID or null' });
+    }
+    satuanUuid = body.satuanUuid.trim();
+  }
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const kategoriId = await resolveUuidToId(conn, 'kategori', 'kategori_Id', kategoriUuid);
+    const supplierId = await resolveUuidToId(conn, 'supplier', 'supplier_Id', supplierUuid);
+    const satuanId = await resolveUuidToId(conn, 'satuan', 'satuan_Id', satuanUuid);
+
+    const [existingRows] = await conn.execute(
+      'SELECT kode_produk, updated_at FROM produk WHERE uuid = ? LIMIT 1 FOR UPDATE',
+      [uuid]
+    );
+
+    if (!existingRows[0]) {
+      await conn.execute(
+        `INSERT INTO produk (
+           kode_produk, nama_produk, harga_beli, harga_jual, stok_produk,
+           kategori_Id, merek_Id, supplier_Id, satuan_Id, uuid, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))`,
+        [
+          kodeProduk,
+          namaProduk,
+          hargaBeli,
+          hargaJual,
+          stokProduk,
+          kategoriId,
+          merekId || 1,
+          supplierId,
+          satuanId || 1,
+          uuid,
+          incomingUpdatedAt,
+        ]
+      );
+      await conn.commit();
+      return res.status(201).json({ status: 'synced' });
+    }
+
+    if (incomingUpdatedAt == null) {
+      await conn.commit();
+      return res.json({ status: 'already_synced' });
+    }
+    const existingUpdatedAt = parseMysqlDateTime(String(existingRows[0].updated_at));
+    if (existingUpdatedAt != null && incomingUpdatedAt <= existingUpdatedAt) {
+      await conn.commit();
+      return res.json({ status: 'already_synced' });
+    }
+
+    // Never overwrite harga_jual / harga_beli from shop push — admin-only via changes pull.
+    await conn.execute(
+      `UPDATE produk
+       SET nama_produk = ?, stok_produk = ?,
+           kategori_Id = COALESCE(?, kategori_Id),
+           merek_Id = COALESCE(?, merek_Id),
+           supplier_Id = COALESCE(?, supplier_Id),
+           satuan_Id = COALESCE(?, satuan_Id),
+           updated_at = ?
+       WHERE uuid = ?`,
+      [
+        namaProduk,
+        stokProduk,
+        kategoriId,
+        merekId,
+        supplierId,
+        satuanId,
+        incomingUpdatedAt,
+        uuid,
+      ]
+    );
+    await conn.commit();
+    return res.json({ status: 'synced' });
+  } catch (err) {
+    try {
+      await conn.rollback();
+    } catch (rollbackErr) {
+      console.error('POST /api/sync/products rollback failed:', rollbackErr);
+    }
+    if (err && err.code === 'ER_DUP_ENTRY') {
+      return res.json({ status: 'already_synced' });
+    }
+    return handleDbError(res, 'POST /api/sync/products', err);
+  } finally {
+    conn.release();
+  }
+});
+
+router.post('/categories', authenticate, async (req, res) => {
+  const body = req.body || {};
+  const uuid = typeof body.uuid === 'string' ? body.uuid.trim() : '';
+  if (!isValidUuid(uuid)) {
+    return res.status(400).json({ error: 'uuid must be a valid UUID' });
+  }
+  const namaKategori = requireTrimmedString(body.namaKategori, { maxLength: 60 });
+  if (namaKategori == null) {
+    return res.status(400).json({ error: 'namaKategori is required' });
+  }
+  const noRak = requireTrimmedString(body.noRak || '', { maxLength: 20, allowEmpty: true }) || '';
+  const updatedAtParsed = parseIncomingUpdatedAt(body);
+  if (!updatedAtParsed.ok) {
+    return res.status(400).json({ error: 'updatedAt must be a valid ISO timestamp' });
+  }
+  const incomingUpdatedAt = updatedAtParsed.value;
+
+  try {
+    const [existingRows] = await pool.execute(
+      'SELECT kategori_Id, updated_at FROM kategori WHERE uuid = ? LIMIT 1',
+      [uuid]
+    );
+    if (!existingRows[0]) {
+      await pool.execute(
+        `INSERT INTO kategori (nama_kategori, no_rak, uuid, updated_at)
+         VALUES (?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))`,
+        [namaKategori, noRak, uuid, incomingUpdatedAt]
+      );
+      return res.status(201).json({ status: 'synced' });
+    }
+    if (incomingUpdatedAt == null) {
+      return res.json({ status: 'already_synced' });
+    }
+    const existingUpdatedAt = parseMysqlDateTime(String(existingRows[0].updated_at));
+    if (existingUpdatedAt != null && incomingUpdatedAt <= existingUpdatedAt) {
+      return res.json({ status: 'already_synced' });
+    }
+    await pool.execute(
+      `UPDATE kategori SET nama_kategori = ?, no_rak = ?, updated_at = ? WHERE uuid = ?`,
+      [namaKategori, noRak, incomingUpdatedAt, uuid]
+    );
+    return res.json({ status: 'synced' });
+  } catch (err) {
+    return handleDbError(res, 'POST /api/sync/categories', err);
+  }
+});
+
+router.post('/suppliers', authenticate, async (req, res) => {
+  const body = req.body || {};
+  const uuid = typeof body.uuid === 'string' ? body.uuid.trim() : '';
+  if (!isValidUuid(uuid)) {
+    return res.status(400).json({ error: 'uuid must be a valid UUID' });
+  }
+  const namaSupplier = requireTrimmedString(body.namaSupplier, { maxLength: 60 });
+  if (namaSupplier == null) {
+    return res.status(400).json({ error: 'namaSupplier is required' });
+  }
+  const alamatSupplier = requireTrimmedString(body.alamatSupplier || '', { maxLength: 255, allowEmpty: true }) || '';
+  const telpSupplier = requireTrimmedString(body.telpSupplier || '', { maxLength: 20, allowEmpty: true }) || '';
+  const updatedAtParsed = parseIncomingUpdatedAt(body);
+  if (!updatedAtParsed.ok) {
+    return res.status(400).json({ error: 'updatedAt must be a valid ISO timestamp' });
+  }
+  const incomingUpdatedAt = updatedAtParsed.value;
+
+  try {
+    const [existingRows] = await pool.execute(
+      'SELECT supplier_Id, updated_at FROM supplier WHERE uuid = ? LIMIT 1',
+      [uuid]
+    );
+    if (!existingRows[0]) {
+      await pool.execute(
+        `INSERT INTO supplier (nama_supplier, alamat_supplier, telp_supplier, uuid, updated_at)
+         VALUES (?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))`,
+        [namaSupplier, alamatSupplier, telpSupplier, uuid, incomingUpdatedAt]
+      );
+      return res.status(201).json({ status: 'synced' });
+    }
+    if (incomingUpdatedAt == null) {
+      return res.json({ status: 'already_synced' });
+    }
+    const existingUpdatedAt = parseMysqlDateTime(String(existingRows[0].updated_at));
+    if (existingUpdatedAt != null && incomingUpdatedAt <= existingUpdatedAt) {
+      return res.json({ status: 'already_synced' });
+    }
+    await pool.execute(
+      `UPDATE supplier SET nama_supplier = ?, alamat_supplier = ?, telp_supplier = ?, updated_at = ?
+       WHERE uuid = ?`,
+      [namaSupplier, alamatSupplier, telpSupplier, incomingUpdatedAt, uuid]
+    );
+    return res.json({ status: 'synced' });
+  } catch (err) {
+    return handleDbError(res, 'POST /api/sync/suppliers', err);
+  }
+});
+
+router.post('/purchases', authenticate, async (req, res) => {
+  const body = req.body || {};
+  const uuid = typeof body.uuid === 'string' ? body.uuid.trim() : '';
+  if (!isValidUuid(uuid)) {
+    return res.status(400).json({ error: 'uuid must be a valid UUID' });
+  }
+  if (!isValidIsoDate(body.tanggalPembelian)) {
+    return res.status(400).json({ error: 'tanggalPembelian must be YYYY-MM-DD' });
+  }
+  const userId = parsePositiveInt(body.userId);
+  if (userId == null) {
+    return res.status(400).json({ error: 'userId must be a positive integer' });
+  }
+  if (!Array.isArray(body.lines)) {
+    return res.status(400).json({ error: 'lines must be an array' });
+  }
+  const lines = [];
+  for (let i = 0; i < body.lines.length; i += 1) {
+    const line = body.lines[i];
+    if (!line || typeof line !== 'object') {
+      return res.status(400).json({ error: `lines[${i}] is invalid` });
+    }
+    const lineUuid = typeof line.uuid === 'string' ? line.uuid.trim() : '';
+    if (!isValidUuid(lineUuid)) {
+      return res.status(400).json({ error: `lines[${i}].uuid must be a valid UUID` });
+    }
+    const kodeProduk = parsePositiveInt(line.kodeProduk);
+    if (kodeProduk == null) {
+      return res.status(400).json({ error: `lines[${i}].kodeProduk must be a positive integer` });
+    }
+    const jumlah = parseDecimalString(line.jumlah);
+    if (jumlah == null) {
+      return res.status(400).json({ error: `lines[${i}].jumlah must be a non-negative decimal` });
+    }
+    lines.push({ uuid: lineUuid, kodeProduk, jumlah });
+  }
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const [existingRows] = await conn.execute(
+      'SELECT pembelian_Id FROM pembelian WHERE uuid = ? LIMIT 1 FOR UPDATE',
+      [uuid]
+    );
+    if (existingRows[0]) {
+      await conn.commit();
+      return res.json({ status: 'already_synced' });
+    }
+
+    const [headerResult] = await conn.execute(
+      `INSERT INTO pembelian (tanggal_pembelian, user_Id, uuid) VALUES (?, ?, ?)`,
+      [body.tanggalPembelian, userId, uuid]
+    );
+    const pembelianId = headerResult.insertId;
+    for (const line of lines) {
+      await conn.execute(
+        `INSERT INTO detail_pembelian (pembelian_Id, kode_produk, jumlah, uuid) VALUES (?, ?, ?, ?)`,
+        [pembelianId, line.kodeProduk, line.jumlah, line.uuid]
+      );
+    }
+    await conn.commit();
+    return res.status(201).json({ status: 'synced' });
+  } catch (err) {
+    try {
+      await conn.rollback();
+    } catch (rollbackErr) {
+      console.error('POST /api/sync/purchases rollback failed:', rollbackErr);
+    }
+    if (err && err.code === 'ER_DUP_ENTRY') {
+      return res.json({ status: 'already_synced' });
+    }
+    return handleDbError(res, 'POST /api/sync/purchases', err);
+  } finally {
+    conn.release();
+  }
+});
+
+router.post('/expenses', authenticate, async (req, res) => {
+  const body = req.body || {};
+  const uuid = typeof body.uuid === 'string' ? body.uuid.trim() : '';
+  if (!isValidUuid(uuid)) {
+    return res.status(400).json({ error: 'uuid must be a valid UUID' });
+  }
+  if (!isValidIsoDate(body.tanggal)) {
+    return res.status(400).json({ error: 'tanggal must be YYYY-MM-DD' });
+  }
+  const kategori = requireTrimmedString(body.kategori, { maxLength: 60 });
+  if (kategori == null) {
+    return res.status(400).json({ error: 'kategori is required' });
+  }
+  let keterangan = null;
+  if (body.keterangan != null && body.keterangan !== '') {
+    keterangan = requireTrimmedString(body.keterangan, { maxLength: 255, allowEmpty: true });
+  }
+  const jumlah = parseNonNegativeInt(body.jumlah);
+  if (jumlah == null) {
+    return res.status(400).json({ error: 'jumlah must be an integer >= 0' });
+  }
+  const userId = parsePositiveInt(body.userId);
+  if (userId == null) {
+    return res.status(400).json({ error: 'userId must be a positive integer' });
+  }
+  const updatedAtParsed = parseIncomingUpdatedAt(body);
+  if (!updatedAtParsed.ok) {
+    return res.status(400).json({ error: 'updatedAt must be a valid ISO timestamp' });
+  }
+  const incomingUpdatedAt = updatedAtParsed.value;
+
+  try {
+    const [existingRows] = await pool.execute(
+      'SELECT pengeluaran_Id, updated_at FROM pengeluaran WHERE uuid = ? LIMIT 1',
+      [uuid]
+    );
+    if (!existingRows[0]) {
+      await pool.execute(
+        `INSERT INTO pengeluaran (tanggal, kategori, keterangan, jumlah, user_Id, uuid, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))`,
+        [body.tanggal, kategori, keterangan, jumlah, userId, uuid, incomingUpdatedAt]
+      );
+      return res.status(201).json({ status: 'synced' });
+    }
+    if (incomingUpdatedAt == null) {
+      return res.json({ status: 'already_synced' });
+    }
+    const existingUpdatedAt = parseMysqlDateTime(String(existingRows[0].updated_at));
+    if (existingUpdatedAt != null && incomingUpdatedAt <= existingUpdatedAt) {
+      return res.json({ status: 'already_synced' });
+    }
+    await pool.execute(
+      `UPDATE pengeluaran
+       SET tanggal = ?, kategori = ?, keterangan = ?, jumlah = ?, user_Id = ?, updated_at = ?
+       WHERE uuid = ?`,
+      [body.tanggal, kategori, keterangan, jumlah, userId, incomingUpdatedAt, uuid]
+    );
+    return res.json({ status: 'synced' });
+  } catch (err) {
+    return handleDbError(res, 'POST /api/sync/expenses', err);
   }
 });
 
