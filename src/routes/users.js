@@ -3,11 +3,12 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const { pool } = require('../db');
 const { authenticate, requireRole } = require('../middleware/auth');
-const { requireTrimmedString, handleDbError } = require('../util');
+const { parsePositiveInt, requireTrimmedString, handleDbError } = require('../util');
 
 const router = express.Router();
 
 const ROLES = new Set(['PEMILIK', 'KARYAWAN']);
+const STATUSES = new Set(['AKTIF', 'NONAKTIF']);
 
 function mapUser(row) {
   return {
@@ -39,12 +40,25 @@ async function fetchById(id) {
   return rows[0] ? mapUser(rows[0]) : null;
 }
 
-async function usernameTaken(username) {
-  const [rows] = await pool.execute(
-    'SELECT 1 FROM users WHERE username_user = ? LIMIT 1',
-    [username]
-  );
+async function usernameTaken(username, excludeId) {
+  const sql = excludeId == null
+    ? 'SELECT 1 FROM users WHERE username_user = ? LIMIT 1'
+    : 'SELECT 1 FROM users WHERE username_user = ? AND user_Id <> ? LIMIT 1';
+  const params = excludeId == null ? [username] : [username, excludeId];
+  const [rows] = await pool.execute(sql, params);
   return rows.length > 0;
+}
+
+function parseRole(body) {
+  const roleRaw = body.role_user ?? body.level_user;
+  const role_user = typeof roleRaw === 'string' ? roleRaw.trim().toUpperCase() : '';
+  return ROLES.has(role_user) ? role_user : null;
+}
+
+function parseStatus(body) {
+  const statusRaw = body.status_user ?? body.status;
+  const status_user = typeof statusRaw === 'string' ? statusRaw.trim().toUpperCase() : '';
+  return STATUSES.has(status_user) ? status_user : null;
 }
 
 router.get('/', authenticate, requireRole('PEMILIK'), async (req, res) => {
@@ -123,6 +137,79 @@ router.post('/', authenticate, requireRole('PEMILIK'), async (req, res) => {
     return res.status(201).json(created);
   } catch (err) {
     return handleDbError(res, 'POST /api/users', err);
+  }
+});
+
+router.put('/:id', authenticate, requireRole('PEMILIK'), async (req, res) => {
+  const id = parsePositiveInt(req.params.id);
+  if (id == null) {
+    return res.status(400).json({ error: 'id must be a positive integer' });
+  }
+
+  const body = req.body || {};
+
+  const username_user = requireTrimmedString(body.username_user, { maxLength: 30 });
+  if (username_user == null) {
+    return res.status(400).json({ error: 'username_user is required (max 30 chars)' });
+  }
+
+  const role_user = parseRole(body);
+  if (role_user == null) {
+    return res.status(400).json({ error: 'role_user must be PEMILIK or KARYAWAN' });
+  }
+
+  const status_user = parseStatus(body);
+  if (status_user == null) {
+    return res.status(400).json({ error: 'status_user must be AKTIF or NONAKTIF' });
+  }
+
+  const hasPassword =
+    body.password_user != null
+    && typeof body.password_user === 'string'
+    && body.password_user.length > 0;
+
+  if (hasPassword && body.password_user.length > 72) {
+    return res.status(400).json({ error: 'password_user is too long' });
+  }
+
+  try {
+    if (await usernameTaken(username_user, id)) {
+      return res.status(409).json({ error: 'That username is already used' });
+    }
+
+    if (hasPassword) {
+      const passwordHash = await bcrypt.hash(body.password_user, 10);
+      const [result] = await pool.execute(
+        `UPDATE users
+         SET nama_user = ?,
+             username_user = ?,
+             password_user = ?,
+             level_user = ?,
+             status_user = ?
+         WHERE user_Id = ?`,
+        [username_user, username_user, passwordHash, role_user, status_user, id]
+      );
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+    } else {
+      const [result] = await pool.execute(
+        `UPDATE users
+         SET nama_user = ?,
+             username_user = ?,
+             level_user = ?,
+             status_user = ?
+         WHERE user_Id = ?`,
+        [username_user, username_user, role_user, status_user, id]
+      );
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+    }
+
+    return res.json(await fetchById(id));
+  } catch (err) {
+    return handleDbError(res, 'PUT /api/users/:id', err);
   }
 });
 
