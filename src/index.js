@@ -12,6 +12,7 @@ const categoryRoutes = require('./routes/categories');
 const brandRoutes = require('./routes/brands');
 const supplierRoutes = require('./routes/suppliers');
 const unitRoutes = require('./routes/units');
+const satuanRoutes = require('./routes/satuan');
 const userRoutes = require('./routes/users');
 const syncRoutes = require('./routes/sync');
 
@@ -22,8 +23,13 @@ if (!process.env.JWT_SECRET) {
 
 const app = express();
 
+app.set('etag', false);
 app.use(cors());
 app.use(express.json());
+app.use((req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
 
 app.get('/api/health', async (req, res) => {
   try {
@@ -47,6 +53,7 @@ app.use('/api/categories', categoryRoutes);
 app.use('/api/brands', brandRoutes);
 app.use('/api/suppliers', supplierRoutes);
 app.use('/api/units', unitRoutes);
+app.use('/api/satuan', satuanRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/sync', syncRoutes);
 

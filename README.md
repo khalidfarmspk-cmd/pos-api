@@ -61,6 +61,7 @@ All JSON field names are camelCase English. Money is returned as integers. Quant
 | `GET` | `/api/health` | none | `{ ok: true, db: true }` after a database ping. `503` if MySQL is unreachable. |
 | `POST` | `/api/auth/login` | none | Body: `{ "username", "password" }`. Inactive users (`status_user` ≠ `AKTIF`) get `403`. |
 | `GET` | `/api/products` | JWT | Products joined to category, brand, supplier, and unit names. |
+| `POST` | `/api/products` | JWT + `PEMILIK` | Body: `{ "nama_produk", "kode_produk", "harga_beli", "harga_jual", "kategori_Id", "stok_produk", "satuan_Id" }`. |
 | `PUT` | `/api/products/:kode_produk` | JWT + `PEMILIK` | Body: `{ "buyPrice", "sellPrice" }` — positive integers only. |
 | `GET` | `/api/sales?from=YYYY-MM-DD&to=YYYY-MM-DD` | JWT | Sales in the date range, including cashier name. |
 | `GET` | `/api/dashboard/summary?date=YYYY-MM-DD` | JWT | Defaults to today. `{ revenue, transactionCount, profit, productCount, lowStockCount }`. |
@@ -78,6 +79,7 @@ All JSON field names are camelCase English. Money is returned as integers. Quant
 | `POST` | `/api/suppliers` | JWT + `PEMILIK` | Body: `{ "name", "address", "phone" }`. Generates `uuid`. |
 | `PUT` | `/api/suppliers/:id` | JWT + `PEMILIK` | Body: `{ "name", "address", "phone" }`. |
 | `GET` | `/api/units` | JWT | `{ unitId, name, allowDecimal, uuid, updatedAt }`. |
+| `GET` | `/api/satuan` | JWT | Same rows as units, with both raw (`satuan_Id`, `nama_satuan`) and mapped (`unitId`, `name`) fields. |
 | `POST` | `/api/units` | JWT + `PEMILIK` | Body: `{ "name", "allowDecimal" }`. Generates `uuid`. |
 | `PUT` | `/api/units/:id` | JWT + `PEMILIK` | Body: `{ "name", "allowDecimal" }`. |
 | `GET` | `/api/users` | JWT + `PEMILIK` | Never returns passwords. |
