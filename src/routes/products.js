@@ -53,6 +53,17 @@ function parsePositiveInt(value) {
   return value;
 }
 
+/** Integer money amount: 0 or greater (negatives rejected). */
+function parseNonNegativeInt(value) {
+  if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
+    value = Number(value.trim());
+  }
+  if (!Number.isInteger(value) || value < 0) {
+    return null;
+  }
+  return value;
+}
+
 function parseStock(value) {
   if (value == null || value === '') return '0';
   const raw = String(value).trim();
@@ -130,8 +141,8 @@ router.post('/', authenticate, requireRole('PEMILIK'), async (req, res) => {
   const body = req.body || {};
   const name = typeof body.nama_produk === 'string' ? body.nama_produk.trim() : '';
   const productCode = parsePositiveInt(body.kode_produk);
-  const buyPrice = parsePositiveInt(body.harga_beli ?? body.buyPrice);
-  const sellPrice = parsePositiveInt(body.harga_jual ?? body.sellPrice);
+  const buyPrice = parseNonNegativeInt(body.harga_beli ?? body.buyPrice);
+  const sellPrice = parseNonNegativeInt(body.harga_jual ?? body.sellPrice);
   const categoryId = parsePositiveInt(body.kategori_Id);
   const unitId = parsePositiveInt(body.satuan_Id);
   const stock = parseStock(body.stok_produk);
@@ -140,16 +151,14 @@ router.post('/', authenticate, requireRole('PEMILIK'), async (req, res) => {
   if (!name || name.length > 30) {
     return res.status(400).json({ error: 'nama_produk is required (max 30 chars)' });
   }
-  if (
-    productCode == null ||
-    buyPrice == null ||
-    sellPrice == null ||
-    categoryId == null ||
-    unitId == null
-  ) {
+  if (productCode == null || categoryId == null || unitId == null) {
     return res.status(400).json({
-      error:
-        'kode_produk, harga_beli, harga_jual, kategori_Id, and satuan_Id must be positive integers',
+      error: 'kode_produk, kategori_Id, and satuan_Id must be positive integers',
+    });
+  }
+  if (buyPrice == null || sellPrice == null) {
+    return res.status(400).json({
+      error: 'harga_beli and harga_jual must be integers >= 0',
     });
   }
   if (stock == null) {
@@ -214,14 +223,14 @@ router.put('/:kode_produk', authenticate, requireRole('PEMILIK'), async (req, re
   }
 
   const body = req.body || {};
-  const buyPrice = parsePositiveInt(body.buyPrice ?? body.harga_beli);
-  const sellPrice = parsePositiveInt(body.sellPrice ?? body.harga_jual);
+  const buyPrice = parseNonNegativeInt(body.buyPrice ?? body.harga_beli);
+  const sellPrice = parseNonNegativeInt(body.sellPrice ?? body.harga_jual);
   const hasIsScale = body.is_scale != null || body.isScale != null;
   const isScale = hasIsScale ? parseBooleanFlag(body.is_scale ?? body.isScale) : null;
 
   if (buyPrice == null || sellPrice == null) {
     return res.status(400).json({
-      error: 'buyPrice and sellPrice are required and must be positive integers',
+      error: 'buyPrice and sellPrice are required and must be integers >= 0',
     });
   }
   if (hasIsScale && isScale == null) {
