@@ -558,9 +558,9 @@ router.post('/products', authenticate, async (req, res) => {
   if (namaProduk == null) {
     return res.status(400).json({ error: 'namaProduk is required' });
   }
-  const stokProduk = parseDecimalString(body.stokProduk);
+  const stokProduk = parseDecimalString(body.stokProduk, { allowNegative: true });
   if (stokProduk == null) {
-    return res.status(400).json({ error: 'stokProduk must be a non-negative decimal' });
+    return res.status(400).json({ error: 'stokProduk must be a decimal' });
   }
   const hargaBeli = parseNonNegativeInt(body.hargaBeli);
   const hargaJual = parseNonNegativeInt(body.hargaJual);

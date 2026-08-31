@@ -56,7 +56,7 @@ function parsePositiveInt(value) {
 function parseStock(value) {
   if (value == null || value === '') return '0';
   const raw = String(value).trim();
-  if (!/^\d+(\.\d{1,3})?$/.test(raw)) return null;
+  if (!/^-?\d+(\.\d{1,3})?$/.test(raw)) return null;
   return raw;
 }
 
@@ -153,7 +153,7 @@ router.post('/', authenticate, requireRole('PEMILIK'), async (req, res) => {
     });
   }
   if (stock == null) {
-    return res.status(400).json({ error: 'stok_produk must be 0 or a positive number' });
+    return res.status(400).json({ error: 'stok_produk must be a decimal number' });
   }
   if (isScale == null) {
     return res.status(400).json({ error: 'is_scale must be boolean or 0/1' });
