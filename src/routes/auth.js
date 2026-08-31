@@ -6,7 +6,8 @@ const { pool } = require('../db');
 const router = express.Router();
 
 router.post('/login', async (req, res) => {
-  const { username, password } = req.body || {};
+  const body = req.body || {};
+  const { username, password } = body;
 
   if (typeof username !== 'string' || typeof password !== 'string'
       || !username.trim() || password.length === 0) {
@@ -34,6 +35,13 @@ router.post('/login', async (req, res) => {
 
     if (String(user.status_user).toUpperCase() !== 'AKTIF') {
       return res.status(403).json({ error: 'Account is not active' });
+    }
+
+    // Web admin dashboard is owner-only; till/desktop may still login as KARYAWAN.
+    const forAdmin = body.forAdmin === true
+      || String(body.client || '').toLowerCase() === 'admin';
+    if (forAdmin && String(user.level_user).toUpperCase() !== 'PEMILIK') {
+      return res.status(403).json({ error: 'Admin access only — owners can sign in here' });
     }
 
     const token = jwt.sign(
