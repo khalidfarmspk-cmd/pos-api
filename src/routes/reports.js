@@ -107,6 +107,58 @@ router.get('/sales', authenticate, async (req, res) => {
   }
 });
 
+router.get('/vegetable-sales', authenticate, async (req, res) => {
+  const range = parseRange(req, res);
+  if (!range) return undefined;
+  const { from, to } = range;
+
+  try {
+    const [itemRows] = await pool.execute(
+      `SELECT
+         p.nama_produk,
+         n.jumlah,
+         n.Subtotal,
+         j.tanggal_penjualan
+       FROM nota_penjualan n
+       JOIN penjualan j ON j.penjualan_Id = n.penjualan_Id
+       JOIN produk p ON p.kode_produk = n.kode_produk
+       WHERE j.tanggal_penjualan >= ?
+         AND j.tanggal_penjualan <= ?
+         AND j.voided = 0
+         AND p.is_scale = 1
+       ORDER BY j.tanggal_penjualan DESC, p.nama_produk ASC`,
+      [from, to]
+    );
+
+    const [expenseRows] = await pool.execute(
+      `SELECT COALESCE(SUM(jumlah), 0) AS totalExpenses
+       FROM pengeluaran
+       WHERE tanggal >= ?
+         AND tanggal <= ?
+         AND keterangan = 'Vegetables'`,
+      [from, to]
+    );
+
+    const items = itemRows.map((row) => ({
+      date: row.tanggal_penjualan,
+      product: row.nama_produk,
+      weight: toQty(row.jumlah),
+      amount: toMoney(row.Subtotal),
+    }));
+
+    const revenue = items.reduce((sum, item) => sum + item.amount, 0);
+    const expenses = toMoney(expenseRows[0]?.totalExpenses);
+
+    return res.json({
+      revenue,
+      items,
+      expenses,
+    });
+  } catch (err) {
+    return handleDbError(res, 'GET /api/reports/vegetable-sales', err);
+  }
+});
+
 router.get('/sales/:penjualanId/lines', authenticate, async (req, res) => {
   const saleId = parsePositiveInt(req.params.penjualanId);
   if (saleId == null) {
