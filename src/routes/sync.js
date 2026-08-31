@@ -418,7 +418,7 @@ router.get('/changes', authenticate, async (req, res) => {
 
     const [productRows] = await pool.execute(
       `SELECT p.uuid, p.kode_produk, p.nama_produk, p.harga_beli, p.harga_jual, p.stok_produk,
-              p.merek_Id, p.updated_at,
+              p.merek_Id, p.is_scale, p.updated_at,
               k.uuid AS kategori_uuid, s.uuid AS supplier_uuid, u.uuid AS satuan_uuid
        FROM produk p
        LEFT JOIN kategori k ON p.kategori_Id = k.kategori_Id
@@ -478,6 +478,7 @@ router.get('/changes', authenticate, async (req, res) => {
         hargaJual: toMoney(row.harga_jual),
         stokProduk: row.stok_produk == null ? '0.000' : String(row.stok_produk),
         merekId: row.merek_Id,
+        isScale: Number(row.is_scale) === 1 ? 1 : 0,
         kategoriUuid: row.kategori_uuid,
         supplierUuid: row.supplier_uuid,
         satuanUuid: row.satuan_uuid,
@@ -569,6 +570,11 @@ router.post('/products', authenticate, async (req, res) => {
   const merekId = body.merekId == null || body.merekId === ''
     ? null
     : parsePositiveInt(body.merekId);
+  const isScaleRaw = body.isScale ?? body.is_scale;
+  const isScale = isScaleRaw == null ? 0 : parseBooleanFlag(isScaleRaw);
+  if (isScale == null) {
+    return res.status(400).json({ error: 'isScale must be boolean or 0/1' });
+  }
   const updatedAtParsed = parseIncomingUpdatedAt(body);
   if (!updatedAtParsed.ok) {
     return res.status(400).json({ error: 'updatedAt must be a valid ISO timestamp' });
@@ -613,8 +619,8 @@ router.post('/products', authenticate, async (req, res) => {
       await conn.execute(
         `INSERT INTO produk (
            kode_produk, nama_produk, harga_beli, harga_jual, stok_produk,
-           kategori_Id, merek_Id, supplier_Id, satuan_Id, uuid, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))`,
+           kategori_Id, merek_Id, supplier_Id, satuan_Id, is_scale, uuid, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))`,
         [
           kodeProduk,
           namaProduk,
@@ -625,6 +631,7 @@ router.post('/products', authenticate, async (req, res) => {
           merekId || 1,
           supplierId,
           satuanId || 1,
+          isScale,
           uuid,
           incomingUpdatedAt,
         ]
@@ -651,6 +658,7 @@ router.post('/products', authenticate, async (req, res) => {
            merek_Id = COALESCE(?, merek_Id),
            supplier_Id = COALESCE(?, supplier_Id),
            satuan_Id = COALESCE(?, satuan_Id),
+           is_scale = ?,
            updated_at = ?
        WHERE uuid = ?`,
       [
@@ -660,6 +668,7 @@ router.post('/products', authenticate, async (req, res) => {
         merekId,
         supplierId,
         satuanId,
+        isScale,
         incomingUpdatedAt,
         uuid,
       ]

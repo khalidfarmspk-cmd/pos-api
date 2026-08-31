@@ -2,6 +2,7 @@ const { randomUUID } = require('crypto');
 const express = require('express');
 const { pool } = require('../db');
 const { authenticate, requireRole } = require('../middleware/auth');
+const { parseBooleanFlag } = require('../util');
 
 const router = express.Router();
 
@@ -30,9 +31,16 @@ function mapProduct(row) {
     brand: row.nama_merek,
     unitId: row.satuan_Id,
     unit: row.nama_satuan,
+    isScale: Number(row.is_scale) === 1 ? 1 : 0,
     uuid: row.uuid,
     updatedAt: row.updated_at,
   };
+}
+
+function parseIsScale(body) {
+  const raw = body.is_scale ?? body.isScale;
+  if (raw == null || raw === '') return 0;
+  return parseBooleanFlag(raw);
 }
 
 function parsePositiveInt(value) {
@@ -68,6 +76,7 @@ async function fetchMappedProduct(productCode) {
        m.nama_merek,
        p.satuan_Id,
        s.nama_satuan,
+       p.is_scale,
        p.uuid,
        p.updated_at
      FROM produk p
@@ -99,6 +108,7 @@ router.get('/', authenticate, async (req, res) => {
          m.nama_merek,
          p.satuan_Id,
          s.nama_satuan,
+         p.is_scale,
          p.uuid,
          p.updated_at
        FROM produk p
@@ -125,6 +135,7 @@ router.post('/', authenticate, requireRole('PEMILIK'), async (req, res) => {
   const categoryId = parsePositiveInt(body.kategori_Id);
   const unitId = parsePositiveInt(body.satuan_Id);
   const stock = parseStock(body.stok_produk);
+  const isScale = parseIsScale(body);
 
   if (!name || name.length > 30) {
     return res.status(400).json({ error: 'nama_produk is required (max 30 chars)' });
@@ -143,6 +154,9 @@ router.post('/', authenticate, requireRole('PEMILIK'), async (req, res) => {
   }
   if (stock == null) {
     return res.status(400).json({ error: 'stok_produk must be 0 or a positive number' });
+  }
+  if (isScale == null) {
+    return res.status(400).json({ error: 'is_scale must be boolean or 0/1' });
   }
 
   try {
@@ -166,8 +180,8 @@ router.post('/', authenticate, requireRole('PEMILIK'), async (req, res) => {
     await pool.execute(
       `INSERT INTO produk (
          kode_produk, nama_produk, harga_beli, harga_jual, stok_produk,
-         kategori_Id, merek_Id, supplier_Id, satuan_Id, uuid
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         kategori_Id, merek_Id, supplier_Id, satuan_Id, is_scale, uuid
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         productCode,
         name,
@@ -178,6 +192,7 @@ router.post('/', authenticate, requireRole('PEMILIK'), async (req, res) => {
         brand[0].merek_Id,
         supplier[0].supplier_Id,
         unitId,
+        isScale,
         randomUUID(),
       ]
     );
@@ -199,32 +214,48 @@ router.put('/:kode_produk', authenticate, requireRole('PEMILIK'), async (req, re
   }
 
   const body = req.body || {};
-  const buyPrice = parsePositiveInt(body.buyPrice);
-  const sellPrice = parsePositiveInt(body.sellPrice);
+  const buyPrice = parsePositiveInt(body.buyPrice ?? body.harga_beli);
+  const sellPrice = parsePositiveInt(body.sellPrice ?? body.harga_jual);
+  const hasIsScale = body.is_scale != null || body.isScale != null;
+  const isScale = hasIsScale ? parseBooleanFlag(body.is_scale ?? body.isScale) : null;
 
   if (buyPrice == null || sellPrice == null) {
     return res.status(400).json({
       error: 'buyPrice and sellPrice are required and must be positive integers',
     });
   }
+  if (hasIsScale && isScale == null) {
+    return res.status(400).json({ error: 'is_scale must be boolean or 0/1' });
+  }
 
   try {
-    const [result] = await pool.execute(
-      `UPDATE produk
-       SET harga_beli = ?, harga_jual = ?
-       WHERE kode_produk = ?`,
-      [buyPrice, sellPrice, productCode]
-    );
+    const [result] = hasIsScale
+      ? await pool.execute(
+          `UPDATE produk
+           SET harga_beli = ?, harga_jual = ?, is_scale = ?
+           WHERE kode_produk = ?`,
+          [buyPrice, sellPrice, isScale, productCode]
+        )
+      : await pool.execute(
+          `UPDATE produk
+           SET harga_beli = ?, harga_jual = ?
+           WHERE kode_produk = ?`,
+          [buyPrice, sellPrice, productCode]
+        );
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: 'Product not found' });
     }
 
-    return res.json({
+    const response = {
       productCode,
       buyPrice,
       sellPrice,
-    });
+    };
+    if (hasIsScale) {
+      response.isScale = isScale;
+    }
+    return res.json(response);
   } catch (err) {
     console.error('PUT /api/products/:kode_produk failed:', err);
     return res.status(500).json({ error: 'Internal server error' });
