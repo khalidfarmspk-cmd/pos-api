@@ -12,6 +12,7 @@ const {
   isValidUuid,
   parseMysqlDateTime,
   parseDecimalString,
+  remainingActiveOwners,
 } = require('../util');
 
 const router = express.Router();
@@ -468,6 +469,18 @@ router.get('/changes', authenticate, async (req, res) => {
       console.warn('GET /api/sync/changes users skipped:', userErr.message);
     }
 
+    let deletedUserRows = [];
+    try {
+      const [rows] = await pool.execute(
+        `SELECT uuid, deleted_at FROM deleted_users WHERE deleted_at > ? ORDER BY deleted_at ASC`,
+        [sinceValue]
+      );
+      deletedUserRows = rows;
+    } catch (delErr) {
+      // deleted_users does not exist until migration_014
+      console.warn('GET /api/sync/changes deleted_users skipped:', delErr.message);
+    }
+
     return res.json({
       serverTime,
       products: productRows.map((row) => ({
@@ -517,6 +530,10 @@ router.get('/changes', authenticate, async (req, res) => {
         levelUser: row.level_user,
         statusUser: row.status_user,
         updatedAt: row.updated_at,
+      })),
+      deletedUsers: deletedUserRows.map((row) => ({
+        uuid: row.uuid,
+        deletedAt: row.deleted_at,
       })),
     });
   } catch (err) {
@@ -1018,6 +1035,43 @@ router.post('/users', authenticate, async (req, res) => {
     return res.json({ status: 'synced' });
   } catch (err) {
     return handleDbError(res, 'POST /api/sync/users', err);
+  }
+});
+
+// Till -> cloud user deletion. Writes a tombstone even when the row is already
+// gone, so the delete still reaches any other client via /sync/changes.
+router.post('/users/delete', authenticate, async (req, res) => {
+  const body = req.body || {};
+  const uuid = typeof body.uuid === 'string' ? body.uuid.trim() : '';
+  if (!isValidUuid(uuid)) {
+    return res.status(400).json({ error: 'uuid must be a valid UUID' });
+  }
+
+  try {
+    const [rows] = await pool.execute(
+      'SELECT user_Id, level_user, status_user FROM users WHERE uuid = ? LIMIT 1',
+      [uuid]
+    );
+
+    if (rows[0] && rows[0].level_user === 'PEMILIK' && rows[0].status_user === 'AKTIF') {
+      const survivors = await remainingActiveOwners(pool, { excludeUuid: uuid });
+      if (survivors === 0) {
+        return res.status(409).json({ error: 'refusing to delete the last active owner account' });
+      }
+    }
+
+    if (rows[0]) {
+      await pool.execute('DELETE FROM users WHERE uuid = ?', [uuid]);
+    }
+    await pool.execute(
+      `INSERT INTO deleted_users (uuid) VALUES (?)
+       ON DUPLICATE KEY UPDATE deleted_at = CURRENT_TIMESTAMP`,
+      [uuid]
+    );
+
+    return res.json({ status: 'synced' });
+  } catch (err) {
+    return handleDbError(res, 'POST /api/sync/users/delete', err);
   }
 });
 

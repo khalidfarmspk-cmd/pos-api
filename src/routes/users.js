@@ -3,7 +3,12 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const { pool } = require('../db');
 const { authenticate, requireRole } = require('../middleware/auth');
-const { parsePositiveInt, requireTrimmedString, handleDbError } = require('../util');
+const {
+  parsePositiveInt,
+  requireTrimmedString,
+  handleDbError,
+  remainingActiveOwners,
+} = require('../util');
 
 const router = express.Router();
 
@@ -211,6 +216,46 @@ router.put('/:id', authenticate, requireRole('PEMILIK'), async (req, res) => {
     return res.json(await fetchById(id));
   } catch (err) {
     return handleDbError(res, 'PUT /api/users/:id', err);
+  }
+});
+
+router.delete('/:id', authenticate, requireRole('PEMILIK'), async (req, res) => {
+  const id = parsePositiveInt(req.params.id);
+  if (id == null) {
+    return res.status(400).json({ error: 'id must be a positive integer' });
+  }
+
+  if (req.user && Number(req.user.user_Id) === id) {
+    return res.status(409).json({ error: 'You cannot delete the account you are signed in with' });
+  }
+
+  try {
+    const [rows] = await pool.execute(
+      'SELECT user_Id, uuid, level_user, status_user FROM users WHERE user_Id = ? LIMIT 1',
+      [id]
+    );
+    if (!rows[0]) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (rows[0].level_user === 'PEMILIK' && rows[0].status_user === 'AKTIF') {
+      const survivors = await remainingActiveOwners(pool, { excludeUserId: id });
+      if (survivors === 0) {
+        return res.status(409).json({ error: 'refusing to delete the last active owner account' });
+      }
+    }
+
+    await pool.execute('DELETE FROM users WHERE user_Id = ?', [id]);
+    // Tombstone so the till drops its copy on the next pull.
+    await pool.execute(
+      `INSERT INTO deleted_users (uuid) VALUES (?)
+       ON DUPLICATE KEY UPDATE deleted_at = CURRENT_TIMESTAMP`,
+      [rows[0].uuid]
+    );
+
+    return res.json({ status: 'deleted', userId: id });
+  } catch (err) {
+    return handleDbError(res, 'DELETE /api/users/:id', err);
   }
 });
 

@@ -148,8 +148,29 @@ function parseDecimalString(value, { allowNegative = false } = {}) {
   return trimmed;
 }
 
+/**
+ * Active PEMILIK accounts that would survive removing the named one. Web login
+ * is owner-only with no signup, so dropping to zero locks everyone out of the
+ * dashboard with no route back in except direct database access.
+ */
+async function remainingActiveOwners(pool, { excludeUuid = null, excludeUserId = null } = {}) {
+  let sql = "SELECT COUNT(*) AS n FROM users WHERE level_user = 'PEMILIK' AND status_user = 'AKTIF'";
+  const params = [];
+  if (excludeUuid != null) {
+    sql += ' AND uuid <> ?';
+    params.push(excludeUuid);
+  }
+  if (excludeUserId != null) {
+    sql += ' AND user_Id <> ?';
+    params.push(excludeUserId);
+  }
+  const [rows] = await pool.execute(sql, params);
+  return Number(rows[0].n);
+}
+
 module.exports = {
   toMoney,
+  remainingActiveOwners,
   toQty,
   parsePositiveInt,
   parseNonNegativeInt,
