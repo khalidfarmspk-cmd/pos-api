@@ -926,4 +926,103 @@ router.post('/expenses', authenticate, async (req, res) => {
   }
 });
 
+// Till -> cloud staff push. Deliberately KARYAWAN-only: a till may not mint or
+// escalate an owner account, and may not overwrite an existing PEMILIK row.
+// Owners are still managed from the admin dashboard via /api/users.
+router.post('/users', authenticate, async (req, res) => {
+  const body = req.body || {};
+  const uuid = typeof body.uuid === 'string' ? body.uuid.trim() : '';
+  if (!isValidUuid(uuid)) {
+    return res.status(400).json({ error: 'uuid must be a valid UUID' });
+  }
+
+  const namaUser = requireTrimmedString(body.namaUser, { maxLength: 30 });
+  if (namaUser == null) {
+    return res.status(400).json({ error: 'namaUser is required (max 30 chars)' });
+  }
+
+  const usernameUser = requireTrimmedString(body.usernameUser, { maxLength: 30 });
+  if (usernameUser == null) {
+    return res.status(400).json({ error: 'usernameUser is required (max 30 chars)' });
+  }
+
+  const passwordHash = requireTrimmedString(body.passwordHash, { maxLength: 255 });
+  if (passwordHash == null || !/^\$2[aby]\$/.test(passwordHash)) {
+    return res.status(400).json({ error: 'passwordHash must be a bcrypt hash' });
+  }
+
+  const levelUser = typeof body.levelUser === 'string' ? body.levelUser.trim().toUpperCase() : '';
+  if (levelUser !== 'KARYAWAN') {
+    return res.status(403).json({ error: 'sync may only push KARYAWAN accounts' });
+  }
+
+  const statusUser = typeof body.statusUser === 'string' ? body.statusUser.trim().toUpperCase() : '';
+  if (statusUser !== 'AKTIF' && statusUser !== 'NONAKTIF') {
+    return res.status(400).json({ error: 'statusUser must be AKTIF or NONAKTIF' });
+  }
+
+  const alamatUser = body.alamatUser == null ? '' : String(body.alamatUser).trim().slice(0, 30);
+  const telpUser = body.telpUser == null ? '' : String(body.telpUser).trim().slice(0, 13);
+
+  const parsedUpdatedAt = parseIncomingUpdatedAt(body);
+  if (!parsedUpdatedAt.ok) {
+    return res.status(400).json({ error: 'updatedAt must be a valid ISO timestamp' });
+  }
+  const incomingUpdatedAt = parsedUpdatedAt.value;
+
+  try {
+    // Reject a username already held by a different account before we touch anything.
+    const [clash] = await pool.execute(
+      'SELECT user_Id FROM users WHERE username_user = ? AND uuid <> ? LIMIT 1',
+      [usernameUser, uuid]
+    );
+    if (clash[0]) {
+      return res.status(409).json({ error: `username ${usernameUser} is already taken` });
+    }
+
+    const [existingRows] = await pool.execute(
+      'SELECT user_Id, level_user, updated_at FROM users WHERE uuid = ? LIMIT 1',
+      [uuid]
+    );
+
+    if (!existingRows[0]) {
+      await pool.execute(
+        `INSERT INTO users (nama_user, alamat_user, telp_user, username_user,
+                            password_user, level_user, status_user, uuid, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ${incomingUpdatedAt ? '?' : 'CURRENT_TIMESTAMP'})`,
+        incomingUpdatedAt
+          ? [namaUser, alamatUser, telpUser, usernameUser, passwordHash, levelUser, statusUser, uuid, incomingUpdatedAt]
+          : [namaUser, alamatUser, telpUser, usernameUser, passwordHash, levelUser, statusUser, uuid]
+      );
+      return res.status(201).json({ status: 'synced' });
+    }
+
+    if (existingRows[0].level_user === 'PEMILIK') {
+      return res.status(403).json({ error: 'sync may not modify a PEMILIK account' });
+    }
+
+    if (incomingUpdatedAt == null) {
+      return res.json({ status: 'already_synced' });
+    }
+
+    const existingUpdatedAt = parseMysqlDateTime(String(existingRows[0].updated_at));
+    if (existingUpdatedAt != null && incomingUpdatedAt <= existingUpdatedAt) {
+      return res.json({ status: 'already_synced' });
+    }
+
+    await pool.execute(
+      `UPDATE users
+       SET nama_user = ?, alamat_user = ?, telp_user = ?, username_user = ?,
+           password_user = ?, level_user = ?, status_user = ?, updated_at = ?
+       WHERE user_Id = ?`,
+      [namaUser, alamatUser, telpUser, usernameUser, passwordHash, levelUser,
+       statusUser, incomingUpdatedAt, existingRows[0].user_Id]
+    );
+
+    return res.json({ status: 'synced' });
+  } catch (err) {
+    return handleDbError(res, 'POST /api/sync/users', err);
+  }
+});
+
 module.exports = router;
