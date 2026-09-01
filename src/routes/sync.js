@@ -926,9 +926,9 @@ router.post('/expenses', authenticate, async (req, res) => {
   }
 });
 
-// Till -> cloud staff push. Deliberately KARYAWAN-only: a till may not mint or
-// escalate an owner account, and may not overwrite an existing PEMILIK row.
-// Owners are still managed from the admin dashboard via /api/users.
+// Till -> cloud user push. Accepts both roles: single-shop deployment where the
+// same operator owns the till and the dashboard, so owners created at the till
+// are expected to reach the web too.
 router.post('/users', authenticate, async (req, res) => {
   const body = req.body || {};
   const uuid = typeof body.uuid === 'string' ? body.uuid.trim() : '';
@@ -952,8 +952,8 @@ router.post('/users', authenticate, async (req, res) => {
   }
 
   const levelUser = typeof body.levelUser === 'string' ? body.levelUser.trim().toUpperCase() : '';
-  if (levelUser !== 'KARYAWAN') {
-    return res.status(403).json({ error: 'sync may only push KARYAWAN accounts' });
+  if (levelUser !== 'KARYAWAN' && levelUser !== 'PEMILIK') {
+    return res.status(400).json({ error: 'levelUser must be PEMILIK or KARYAWAN' });
   }
 
   const statusUser = typeof body.statusUser === 'string' ? body.statusUser.trim().toUpperCase() : '';
@@ -995,10 +995,6 @@ router.post('/users', authenticate, async (req, res) => {
           : [namaUser, alamatUser, telpUser, usernameUser, passwordHash, levelUser, statusUser, uuid]
       );
       return res.status(201).json({ status: 'synced' });
-    }
-
-    if (existingRows[0].level_user === 'PEMILIK') {
-      return res.status(403).json({ error: 'sync may not modify a PEMILIK account' });
     }
 
     if (incomingUpdatedAt == null) {
