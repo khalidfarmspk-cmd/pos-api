@@ -1075,4 +1075,40 @@ router.post('/users/delete', authenticate, async (req, res) => {
   }
 });
 
+// Till -> cloud customer removal. The cloud row has to go as well, otherwise
+// the till's next pull would re-insert the customer it just deleted.
+router.post('/customers/delete', authenticate, async (req, res) => {
+  const body = req.body || {};
+  const uuid = typeof body.uuid === 'string' ? body.uuid.trim() : '';
+  if (!isValidUuid(uuid)) {
+    return res.status(400).json({ error: 'uuid must be a valid UUID' });
+  }
+
+  try {
+    const [rows] = await pool.execute(
+      'SELECT pelanggan_Id FROM pelanggan WHERE uuid = ? LIMIT 1',
+      [uuid]
+    );
+    if (!rows[0]) {
+      return res.json({ status: 'already_synced' });
+    }
+
+    // penjualan.pelanggan_Id restricts deletes; report it rather than 500ing.
+    const [sales] = await pool.execute(
+      'SELECT COUNT(*) AS n FROM penjualan WHERE pelanggan_Id = ?',
+      [rows[0].pelanggan_Id]
+    );
+    if (Number(sales[0].n) > 0) {
+      return res.status(409).json({
+        error: `customer is referenced by ${sales[0].n} sale(s) and cannot be deleted`,
+      });
+    }
+
+    await pool.execute('DELETE FROM pelanggan WHERE uuid = ?', [uuid]);
+    return res.json({ status: 'synced' });
+  } catch (err) {
+    return handleDbError(res, 'POST /api/sync/customers/delete', err);
+  }
+});
+
 module.exports = router;
