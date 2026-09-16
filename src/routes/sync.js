@@ -576,6 +576,32 @@ async function resolveDefaultMerekId(conn) {
   }
 }
 
+/** Live satuan_Id fallback when desktop satuanUuid is missing or not on live. */
+async function resolveDefaultSatuanId(conn) {
+  const [existing] = await conn.execute(
+    `SELECT satuan_Id AS id FROM satuan WHERE nama_satuan = 'Piece' LIMIT 1`
+  );
+  if (existing[0]) {
+    return existing[0].id;
+  }
+  try {
+    const [result] = await conn.execute(
+      `INSERT INTO satuan (nama_satuan, allow_decimal, uuid) VALUES ('Piece', 0, UUID())`
+    );
+    return result.insertId;
+  } catch (err) {
+    if (err && err.code === 'ER_DUP_ENTRY') {
+      const [rows] = await conn.execute(
+        `SELECT satuan_Id AS id FROM satuan WHERE nama_satuan = 'Piece' LIMIT 1`
+      );
+      if (rows[0]) {
+        return rows[0].id;
+      }
+    }
+    throw err;
+  }
+}
+
 function parseIncomingUpdatedAt(body) {
   if (body.updatedAt == null || body.updatedAt === '') {
     return { ok: true, value: null };
@@ -649,7 +675,8 @@ router.post('/products', authenticate, async (req, res) => {
     await conn.beginTransaction();
     const kategoriId = await resolveUuidToId(conn, 'kategori', 'kategori_Id', kategoriUuid);
     const supplierId = await resolveUuidToId(conn, 'supplier', 'supplier_Id', supplierUuid);
-    const satuanId = await resolveUuidToId(conn, 'satuan', 'satuan_Id', satuanUuid);
+    const satuanId = (await resolveUuidToId(conn, 'satuan', 'satuan_Id', satuanUuid))
+      || (await resolveDefaultSatuanId(conn));
     const merekId = await resolveDefaultMerekId(conn);
 
     const [existingRows] = await conn.execute(
@@ -672,7 +699,7 @@ router.post('/products', authenticate, async (req, res) => {
           kategoriId,
           merekId,
           supplierId,
-          satuanId || 1,
+          satuanId,
           isScale,
           uuid,
           incomingUpdatedAt,
@@ -699,7 +726,7 @@ router.post('/products', authenticate, async (req, res) => {
            kategori_Id = COALESCE(?, kategori_Id),
            merek_Id = ?,
            supplier_Id = COALESCE(?, supplier_Id),
-           satuan_Id = COALESCE(?, satuan_Id),
+           satuan_Id = ?,
            is_scale = ?,
            updated_at = ?
        WHERE uuid = ?`,
