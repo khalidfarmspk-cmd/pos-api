@@ -189,8 +189,8 @@ router.post('/', authenticate, requireRole('PEMILIK'), async (req, res) => {
     await pool.execute(
       `INSERT INTO produk (
          kode_produk, nama_produk, harga_beli, harga_jual, stok_produk,
-         kategori_Id, merek_Id, supplier_Id, satuan_Id, is_scale, uuid
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         kategori_Id, merek_Id, supplier_Id, satuan_Id, is_scale, uuid, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
       [
         productCode,
         name,
@@ -241,13 +241,13 @@ router.put('/:kode_produk', authenticate, requireRole('PEMILIK'), async (req, re
     const [result] = hasIsScale
       ? await pool.execute(
           `UPDATE produk
-           SET harga_beli = ?, harga_jual = ?, is_scale = ?
+           SET harga_beli = ?, harga_jual = ?, is_scale = ?, updated_at = CURRENT_TIMESTAMP
            WHERE kode_produk = ?`,
           [buyPrice, sellPrice, isScale, productCode]
         )
       : await pool.execute(
           `UPDATE produk
-           SET harga_beli = ?, harga_jual = ?
+           SET harga_beli = ?, harga_jual = ?, updated_at = CURRENT_TIMESTAMP
            WHERE kode_produk = ?`,
           [buyPrice, sellPrice, productCode]
         );
