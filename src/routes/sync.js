@@ -550,6 +550,32 @@ async function resolveUuidToId(conn, table, idCol, uuid) {
   return rows[0] ? rows[0].id : null;
 }
 
+/** Live merek_Id for product sync — never trust desktop numeric merekId. */
+async function resolveDefaultMerekId(conn) {
+  const [existing] = await conn.execute(
+    `SELECT merek_Id AS id FROM merek WHERE nama_merek = 'General' LIMIT 1`
+  );
+  if (existing[0]) {
+    return existing[0].id;
+  }
+  try {
+    const [result] = await conn.execute(
+      `INSERT INTO merek (nama_merek, uuid) VALUES ('General', UUID())`
+    );
+    return result.insertId;
+  } catch (err) {
+    if (err && err.code === 'ER_DUP_ENTRY') {
+      const [rows] = await conn.execute(
+        `SELECT merek_Id AS id FROM merek WHERE nama_merek = 'General' LIMIT 1`
+      );
+      if (rows[0]) {
+        return rows[0].id;
+      }
+    }
+    throw err;
+  }
+}
+
 function parseIncomingUpdatedAt(body) {
   if (body.updatedAt == null || body.updatedAt === '') {
     return { ok: true, value: null };
@@ -584,9 +610,7 @@ router.post('/products', authenticate, async (req, res) => {
   if (hargaBeli == null || hargaJual == null) {
     return res.status(400).json({ error: 'hargaBeli and hargaJual must be integers >= 0' });
   }
-  const merekId = body.merekId == null || body.merekId === ''
-    ? null
-    : parsePositiveInt(body.merekId);
+  // body.merekId accepted from desktop but ignored for FK (local IDs ≠ live merek).
   const isScaleRaw = body.isScale ?? body.is_scale;
   const isScale = isScaleRaw == null ? 0 : parseBooleanFlag(isScaleRaw);
   if (isScale == null) {
@@ -626,6 +650,7 @@ router.post('/products', authenticate, async (req, res) => {
     const kategoriId = await resolveUuidToId(conn, 'kategori', 'kategori_Id', kategoriUuid);
     const supplierId = await resolveUuidToId(conn, 'supplier', 'supplier_Id', supplierUuid);
     const satuanId = await resolveUuidToId(conn, 'satuan', 'satuan_Id', satuanUuid);
+    const merekId = await resolveDefaultMerekId(conn);
 
     const [existingRows] = await conn.execute(
       'SELECT kode_produk, updated_at FROM produk WHERE uuid = ? LIMIT 1 FOR UPDATE',
@@ -645,7 +670,7 @@ router.post('/products', authenticate, async (req, res) => {
           hargaJual,
           stokProduk,
           kategoriId,
-          merekId || 1,
+          merekId,
           supplierId,
           satuanId || 1,
           isScale,
@@ -672,7 +697,7 @@ router.post('/products', authenticate, async (req, res) => {
       `UPDATE produk
        SET nama_produk = ?, stok_produk = ?,
            kategori_Id = COALESCE(?, kategori_Id),
-           merek_Id = COALESCE(?, merek_Id),
+           merek_Id = ?,
            supplier_Id = COALESCE(?, supplier_Id),
            satuan_Id = COALESCE(?, satuan_Id),
            is_scale = ?,
