@@ -66,6 +66,14 @@ function parseSaleBody(body) {
     return { error: 'userId must be a positive integer' };
   }
 
+  let userUuid = null;
+  if (body.userUuid != null && body.userUuid !== '') {
+    if (typeof body.userUuid !== 'string' || !isValidUuid(body.userUuid.trim())) {
+      return { error: 'userUuid must be a valid UUID or null' };
+    }
+    userUuid = body.userUuid.trim();
+  }
+
   let pelangganUuid = null;
   if (body.pelangganUuid != null && body.pelangganUuid !== '') {
     if (typeof body.pelangganUuid !== 'string' || !isValidUuid(body.pelangganUuid.trim())) {
@@ -131,6 +139,7 @@ function parseSaleBody(body) {
       uangDiterima,
       uangKembalian,
       userId,
+      userUuid,
       pelangganUuid,
       metodeId: metode.value,
       namaKurir,
@@ -180,6 +189,8 @@ router.post('/sales', authenticate, async (req, res) => {
       }
     }
 
+    const userId = await resolveSaleUserId(conn, sale.userUuid, sale.userId);
+
     const [headerResult] = await conn.execute(
       `INSERT INTO penjualan (
          tanggal_penjualan,
@@ -200,7 +211,7 @@ router.post('/sales', authenticate, async (req, res) => {
         sale.totalPembayaran,
         sale.uangDiterima,
         sale.uangKembalian,
-        sale.userId,
+        userId,
         sale.uuid,
         pelangganId,
         sale.metodeId,
@@ -600,6 +611,49 @@ async function resolveDefaultSatuanId(conn) {
     }
     throw err;
   }
+}
+
+/** Prefer existing admin/owner — do not invent users for sale sync. */
+async function resolveDefaultUserId(conn) {
+  const [admin] = await conn.execute(
+    `SELECT user_Id AS id FROM users WHERE username_user = 'admin' LIMIT 1`
+  );
+  if (admin[0]) {
+    return admin[0].id;
+  }
+  const [owners] = await conn.execute(
+    `SELECT user_Id AS id FROM users
+     WHERE UPPER(level_user) IN ('PEMILIK', 'OWNER', 'ADMIN')
+     ORDER BY user_Id ASC LIMIT 1`
+  );
+  if (owners[0]) {
+    return owners[0].id;
+  }
+  const [any] = await conn.execute(
+    `SELECT user_Id AS id FROM users ORDER BY user_Id ASC LIMIT 1`
+  );
+  if (any[0]) {
+    return any[0].id;
+  }
+  throw new Error('No users available for sale sync user_Id fallback');
+}
+
+/** Map desktop cashier to a live users.user_Id (uuid → existing id → default). */
+async function resolveSaleUserId(conn, userUuid, localUserId) {
+  const fromUuid = await resolveUuidToId(conn, 'users', 'user_Id', userUuid);
+  if (fromUuid != null) {
+    return fromUuid;
+  }
+  if (localUserId != null) {
+    const [rows] = await conn.execute(
+      'SELECT user_Id AS id FROM users WHERE user_Id = ? LIMIT 1',
+      [localUserId]
+    );
+    if (rows[0]) {
+      return rows[0].id;
+    }
+  }
+  return resolveDefaultUserId(conn);
 }
 
 function parseIncomingUpdatedAt(body) {
